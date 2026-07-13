@@ -1,14 +1,12 @@
 """
-plot_results.py
----------------
-Generates all figures for the paper from real simulation results.
-Run this after run_experiment.py produces results.
-
-Figures produced:
-  fig_regret.pdf       — cumulative regret over time (primary result)
+plot_results.py  —  Publication-quality figures for CGAR paper
+==============================================================
+Generates 5 figures:
+  fig_regret.pdf       — cumulative regret + 95% CI bands  (primary result)
   fig_p99_churn.pdf    — P99 latency around churn events
-  fig_sla.pdf          — SLA violation rate comparison
-  fig_summary.pdf      — Summary bar chart of all metrics
+  fig_sla.pdf          — rolling SLA violation rate
+  fig_summary.pdf      — bar chart of all metrics
+  fig_churn_decomp.pdf — churn-window vs steady-state regret (key paper figure)
 """
 
 import numpy as np
@@ -18,195 +16,248 @@ import matplotlib.pyplot as plt
 import os
 
 plt.rcParams.update({
-    "font.family": "serif",
-    "font.size": 11,
-    "axes.titlesize": 11,
-    "axes.labelsize": 11,
-    "legend.fontsize": 9.5,
-    "figure.dpi": 150,
+    "font.family":       "serif",
+    "font.size":         11,
+    "axes.titlesize":    12,
+    "axes.labelsize":    11,
+    "legend.fontsize":   9,
+    "xtick.labelsize":   9,
+    "ytick.labelsize":   9,
+    "figure.dpi":        180,
+    "axes.spines.top":   False,
+    "axes.spines.right": False,
+    "axes.grid":         True,
+    "grid.alpha":        0.25,
+    "grid.linestyle":    "--",
 })
 
-COLORS = {
-    "Round Robin": "#888888",
-    "Least Connections": "#e67e22",
-    "Pure DQN": "#c0392b",
-    "Eps-Greedy DQN": "#8e44ad",
-    "Heuristic Only": "#16a085",
-    "RL Only": "#d35400",
-    "Static Hybrid": "#2980b9",
-    "CGAR (Adaptive)": "#1a5fa8",
+STYLE = {
+    "Round Robin":       ("#999999", "--",  1.4),
+    "Least Connections": ("#e67e22", ":",   1.6),
+    "Pure DQN":          ("#c0392b", "-",   1.4),
+    "Eps-Greedy DQN":    ("#8e44ad", "-.",  1.4),
+    "Heuristic Only":    ("#27ae60", "--",  1.2),
+    "RL Only":           ("#e74c3c", ":",   1.2),
+    "Static Hybrid":     ("#f39c12", "-.",  1.2),
+    "CGAR (Adaptive)":   ("#1a5276", "-",   2.8),
 }
 
-STYLES = {
-    "Round Robin": ("--", 1.4),
-    "Least Connections": (":", 1.4),
-    "Pure DQN": ("-", 1.4),
-    "Eps-Greedy DQN": ("-.", 1.4),
-    "Heuristic Only": ("--", 1.5),
-    "RL Only": ("-.", 1.5),
-    "Static Hybrid": (":", 1.7),
-    "CGAR (Adaptive)": ("-", 2.8),
-}
-
-OUTPUT_DIR = os.path.dirname(__file__)
+OUT = os.path.join(os.path.dirname(__file__), "results")
+os.makedirs(OUT, exist_ok=True)
 
 
-def plot_cumulative_regret(all_results, churn_timesteps, save_path):
-    fig, ax = plt.subplots(figsize=(7, 4.2))
+# ── Figure 1: Cumulative Regret with 95% CI ───────────────────────────────
 
-    for name, runs in all_results.items():
-        curves = np.array([r.cumulative_regret for r in runs])
+def plot_cumulative_regret(aggregated, churn_ts, n_seeds=20):
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
 
-        mean_curve = np.mean(curves, axis=0)
-        std_curve = np.std(curves, axis=0)
-        ci = 1.96 * std_curve / np.sqrt(len(runs))
+    for name, res in aggregated.items():
+        c, ls, lw = STYLE.get(name, ("#555", "-", 1.4))
+        y = np.array(res.cumulative_regret)
+        x = np.arange(len(y))
+        ax.plot(x, y, label=name, color=c, linestyle=ls, linewidth=lw)
+        if hasattr(res, "cumulative_regret_std"):
+            std    = np.array(res.cumulative_regret_std)
+            margin = 1.96 * std / np.sqrt(n_seeds)
+            ax.fill_between(x, y - margin, y + margin, color=c, alpha=0.08)
 
-        ls, lw = STYLES.get(name, ("-", 1.5))
-        color = COLORS.get(name, "black")
+    ymax = ax.get_ylim()[1]
+    for i, ct in enumerate(churn_ts):
+        ax.axvline(ct, color="#aaaaaa", linewidth=0.9, linestyle=":")
+        ax.text(ct + 30, ymax * 0.04, f"C{i+1}",
+                fontsize=8, color="#888888", va="bottom")
 
-        ax.plot(mean_curve, label=name, color=color,
-                linestyle=ls, linewidth=lw)
-
-        ax.fill_between(
-            range(len(mean_curve)),
-            mean_curve - ci,
-            mean_curve + ci,
-            color=color,
-            alpha=0.15
-        )
-
-    for ct in churn_timesteps:
-        ax.axvline(ct, color="#bbbbbb", linewidth=0.9, linestyle=":")
-
-    ax.set_xlabel("Request index")
-    ax.set_ylabel("Cumulative regret")
-    ax.set_title("Cumulative Regret with 95% Confidence Interval")
-    ax.legend(loc="upper left")
-    ax.grid(True, alpha=0.25)
+    ax.set_xlabel("Request index $t$")
+    ax.set_ylabel("Cumulative regret $R(T)$")
+    ax.set_title("Cumulative Regret vs. Request Index\n"
+                 f"(mean ± 95% CI, {n_seeds} seeds; C1–C4 = churn events)")
+    ax.legend(loc="upper left", ncol=2, framealpha=0.9)
     plt.tight_layout()
-    plt.savefig(save_path, bbox_inches="tight")
+    path = os.path.join(OUT, "fig_regret.pdf")
+    plt.savefig(path, bbox_inches="tight")
     plt.close()
+    print(f"  ✓ {path}")
 
 
-def plot_p99_churn(all_results, save_path):
-    fig, ax = plt.subplots(figsize=(6.5, 4.0))
+# ── Figure 2: P99 Latency Around Churn Events ────────────────────────────
 
-    names = list(all_results.keys())
-    p99s = []
+def plot_p99_churn(all_runs, window=300):
+    fig, ax = plt.subplots(figsize=(7.0, 4.2))
+    bins    = np.arange(-window, window + 1, 30)
+    centers = (bins[:-1] + bins[1:]) / 2
 
-    for name, runs in all_results.items():
-        vals = [r.p99_latency() for r in runs]
-        p99s.append(np.mean(vals))
+    for name, runs in all_runs.items():
+        c, ls, lw = STYLE.get(name, ("#555", "-", 1.4))
+        all_rel, all_lat = [], []
+        for r in runs:
+            for rel, lat in r.churn_window_latencies:
+                all_rel.append(rel)
+                all_lat.append(lat)
+        if not all_rel:
+            continue
+        all_rel = np.array(all_rel)
+        all_lat = np.array(all_lat)
+        p99_bins = []
+        for lo, hi in zip(bins[:-1], bins[1:]):
+            mask = (all_rel >= lo) & (all_rel < hi)
+            p99_bins.append(np.percentile(all_lat[mask], 99)
+                            if mask.sum() > 5 else np.nan)
+        ax.plot(centers, p99_bins, label=name,
+                color=c, linestyle=ls, linewidth=lw)
 
+    ax.axvline(0, color="black", linewidth=1.2)
+    ax.text(10, ax.get_ylim()[1] * 0.97,
+            "churn\nevent", fontsize=8, va="top", color="#333")
+    ax.set_xlabel("Requests relative to churn event ($t = 0$)")
+    ax.set_ylabel("P99 latency (ms)")
+    ax.set_title("P99 Latency Around Backend Pool Churn Events\n"
+                 "(aggregated across all churn events and seeds)")
+    ax.legend(loc="upper right", ncol=2, framealpha=0.9)
+    plt.tight_layout()
+    path = os.path.join(OUT, "fig_p99_churn.pdf")
+    plt.savefig(path, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ {path}")
+
+
+# ── Figure 3: Rolling SLA Violation Rate ─────────────────────────────────
+
+def plot_sla(aggregated, churn_ts, window=150):
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+    for name, res in aggregated.items():
+        c, ls, lw = STYLE.get(name, ("#555", "-", 1.4))
+        sla     = np.array(res.sla_violations, dtype=float)
+        rolling = np.convolve(sla, np.ones(window) / window, mode="valid")
+        ax.plot(rolling * 100, label=name, color=c, linestyle=ls, linewidth=lw)
+    for ct in churn_ts:
+        ax.axvline(ct, color="#aaaaaa", linewidth=0.9, linestyle=":")
+    ax.set_xlabel("Request index $t$")
+    ax.set_ylabel(f"SLA violation rate (%, {window}-req rolling avg)")
+    ax.set_title("Rolling SLA Violation Rate Over Time")
+    ax.legend(loc="upper right", ncol=2, framealpha=0.9)
+    plt.tight_layout()
+    path = os.path.join(OUT, "fig_sla.pdf")
+    plt.savefig(path, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ {path}")
+
+
+# ── Figure 4: Summary Bar Chart ───────────────────────────────────────────
+
+def plot_summary(all_runs):
+    names  = list(all_runs.keys())
+    colors = [STYLE.get(n, ("#555", "-", 1))[0] for n in names]
+
+    p99s = [np.mean([r.p99_latency()        for r in all_runs[n]]) for n in names]
+    slas = [np.mean([r.sla_violation_rate() for r in all_runs[n]]) * 100 for n in names]
+    regs = [np.mean([r.total_regret()       for r in all_runs[n]]) / 1000 for n in names]
+    p99e = [np.std([r.p99_latency()         for r in all_runs[n]]) / np.sqrt(len(all_runs[n])) for n in names]
+    slae = [np.std([r.sla_violation_rate()  for r in all_runs[n]]) / np.sqrt(len(all_runs[n])) * 100 for n in names]
+    rege = [np.std([r.total_regret()        for r in all_runs[n]]) / np.sqrt(len(all_runs[n])) / 1000 for n in names]
+
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.5))
     x = np.arange(len(names))
-    colors = [COLORS.get(n, "#555555") for n in names]
 
-    bars = ax.bar(x, p99s, color=colors)
+    for ax, vals, errs, title, ylabel in zip(
+        axes,
+        [p99s, slas, regs],
+        [p99e, slae, rege],
+        ["P99 Latency", "SLA Violation Rate", "Total Regret (×10³)"],
+        ["ms", "%", "regret units"],
+    ):
+        bars = ax.bar(x, vals, yerr=errs, color=colors,
+                      edgecolor="white", linewidth=0.5,
+                      error_kw=dict(ecolor="#555", capsize=3, lw=1.2))
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, rotation=32, ha="right", fontsize=8)
+        ax.set_title(title, fontsize=10, fontweight="bold")
+        ax.set_ylabel(ylabel, fontsize=9)
+        for bar, val, err in zip(bars, vals, errs):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + err + max(vals) * 0.01,
+                    f"{val:.1f}", ha="center", va="bottom", fontsize=7.5)
+
+    plt.suptitle(f"Summary Metrics — Mean ± SE across {len(list(all_runs.values())[0])} Seeds",
+                 fontsize=11, fontweight="bold", y=1.01)
+    plt.tight_layout()
+    path = os.path.join(OUT, "fig_summary.pdf")
+    plt.savefig(path, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ {path}")
+
+
+# ── Figure 5: Churn-Window vs Steady-State Regret Decomposition ──────────
+# This is the KEY figure for the paper — it shows CGAR's specific advantage
+# around churn events, which is the paper's central claim.
+
+def decompose_regret(result, churn_ts, window=300):
+    regs = np.array(result.regrets)
+    n    = len(regs)
+    mask = np.zeros(n, dtype=bool)
+    for ct in churn_ts:
+        mask[ct:min(ct + window, n)] = True
+    return regs[mask].sum(), regs[~mask].sum()
+
+
+def plot_churn_decomposition(all_runs, churn_ts):
+    names  = list(all_runs.keys())
+    colors = [STYLE.get(n, ("#555", "-", 1))[0] for n in names]
+
+    churn_regs  = []
+    steady_regs = []
+    churn_errs  = []
+    steady_errs = []
+
+    for name in names:
+        cw = [decompose_regret(r, churn_ts)[0] / 1000 for r in all_runs[name]]
+        ss = [decompose_regret(r, churn_ts)[1] / 1000 for r in all_runs[name]]
+        n  = len(cw)
+        churn_regs.append(np.mean(cw))
+        steady_regs.append(np.mean(ss))
+        churn_errs.append(np.std(cw) / np.sqrt(n))
+        steady_errs.append(np.std(ss) / np.sqrt(n))
+
+    x  = np.arange(len(names))
+    w  = 0.38
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    b1 = ax.bar(x - w/2, churn_regs,  w, yerr=churn_errs,
+                label="Churn-window regret $R_{\\mathrm{churn}}$",
+                color=colors, alpha=0.95,
+                error_kw=dict(ecolor="#333", capsize=3, lw=1.2))
+    b2 = ax.bar(x + w/2, steady_regs, w, yerr=steady_errs,
+                label="Steady-state regret $R_{\\mathrm{steady}}$",
+                color=colors, alpha=0.45, hatch="//",
+                error_kw=dict(ecolor="#333", capsize=3, lw=1.2))
 
     ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=20, ha="right")
-    ax.set_ylabel("P99 Latency (ms)")
-    ax.set_title("P99 Latency Comparison")
+    ax.set_xticklabels(names, rotation=25, ha="right", fontsize=9)
+    ax.set_ylabel("Regret (×10³)")
+    ax.set_title("Churn-Window vs. Steady-State Regret Decomposition\n"
+                 "(solid = churn-window  ///  = steady-state)")
+    ax.legend(loc="upper right", framealpha=0.9)
 
-    for bar, val in zip(bars, p99s):
-        ax.text(bar.get_x() + bar.get_width()/2,
-                bar.get_height(),
-                f"{val:.1f}",
-                ha='center', va='bottom', fontsize=8)
-
-    plt.tight_layout()
-    plt.savefig(save_path, bbox_inches="tight")
-    plt.close()
-
-
-def plot_summary_bars(all_results, save_path):
-    names = list(all_results.keys())
-
-    p99s = [np.mean([r.p99_latency() for r in runs]) for runs in all_results.values()]
-    slas = [np.mean([r.sla_violation_rate()*100 for r in runs]) for runs in all_results.values()]
-    regrets = [np.mean([r.total_regret()/1000 for r in runs]) for runs in all_results.values()]
-
-    x = np.arange(len(names))
-    colors = [COLORS.get(n, "#555555") for n in names]
-
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-
-    metrics = [
-        (p99s, "P99 Latency", "ms"),
-        (slas, "SLA Violation Rate", "%"),
-        (regrets, "Total Regret", "×10³")
-    ]
-
-    for ax, (vals, title, ylabel) in zip(axes, metrics):
-        bars = ax.bar(x, vals, color=colors)
-
-        ax.set_xticks(x)
-        ax.set_xticklabels(names, rotation=30, ha="right", fontsize=8)
-        ax.set_title(title)
-        ax.set_ylabel(ylabel)
-        ax.grid(True, axis="y", alpha=0.25)
+    for i, (cv, sv) in enumerate(zip(churn_regs, steady_regs)):
+        ax.text(i - w/2, cv + churn_errs[i] + 0.2,
+                f"{cv:.1f}", ha="center", va="bottom", fontsize=7.5)
+        ax.text(i + w/2, sv + steady_errs[i] + 0.2,
+                f"{sv:.1f}", ha="center", va="bottom", fontsize=7.5)
 
     plt.tight_layout()
-    plt.savefig(save_path, bbox_inches="tight")
+    path = os.path.join(OUT, "fig_churn_decomp.pdf")
+    plt.savefig(path, bbox_inches="tight")
     plt.close()
+    print(f"  ✓ {path}")
 
 
-def plot_sla_over_time(all_results, window_size=100, save_path="fig_sla.pdf"):
-    fig, ax = plt.subplots(figsize=(7, 4))
+# ── Master call ───────────────────────────────────────────────────────────
 
-    for name, runs in all_results.items():
-        curves = []
-
-        for r in runs:
-            sla = np.array(r.sla_violations, dtype=float)
-            rolling = np.convolve(sla, np.ones(window_size)/window_size, mode='valid')
-            curves.append(rolling)
-
-        curves = np.array(curves)
-        mean_curve = np.mean(curves, axis=0)
-
-        ls, lw = STYLES.get(name, ("-", 1.5))
-        ax.plot(mean_curve*100,
-                label=name,
-                color=COLORS.get(name, "black"),
-                linestyle=ls,
-                linewidth=lw)
-
-    ax.set_xlabel("Request index")
-    ax.set_ylabel("SLA violation rate (%)")
-    ax.set_title("Rolling SLA Violation Rate")
-    ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.25)
-
-    plt.tight_layout()
-    plt.savefig(save_path, bbox_inches="tight")
-    plt.close()
-
-
-def generate_all_figures(all_results, churn_timesteps):
-    out = OUTPUT_DIR
-
-    print("\nGenerating figures...")
-
-    plot_cumulative_regret(
-        all_results,
-        churn_timesteps,
-        save_path=os.path.join(out, "fig_regret.pdf")
-    )
-
-    plot_p99_churn(
-        all_results,
-        save_path=os.path.join(out, "fig_p99_churn.pdf")
-    )
-
-    plot_summary_bars(
-        all_results,
-        save_path=os.path.join(out, "fig_summary.pdf")
-    )
-
-    plot_sla_over_time(
-        all_results,
-        save_path=os.path.join(out, "fig_sla.pdf")
-    )
-
-    print("All figures saved.")
+def generate_all_figures(all_runs, aggregated, churn_ts):
+    n_seeds = len(list(all_runs.values())[0])
+    print(f"\nGenerating publication figures ({n_seeds} seeds)...")
+    plot_cumulative_regret(aggregated, churn_ts, n_seeds)
+    plot_p99_churn(all_runs, window=300)
+    plot_sla(aggregated, churn_ts)
+    plot_summary(all_runs)
+    plot_churn_decomposition(all_runs, churn_ts)
+    print(f"All 5 figures saved to results/")
